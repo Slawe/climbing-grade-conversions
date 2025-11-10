@@ -1,0 +1,54 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+use Climb\Grades\Domain\Value\Grade;
+use Climb\Grades\Domain\Value\GradeSystem;
+use Climb\Grades\Infrastructure\Config\GradeServices;
+
+require __DIR__ . '/../vendor/autoload.php';
+
+$argv = $_SERVER['argv'];
+$argc = $_SERVER['argc'];
+
+if ($argc < 3) {
+    echo "Usage:\n";
+    echo "  php bin/grades <gradeValue> <gradeSystem> [targetSystem]\n";
+    echo "\nExamples:\n";
+    echo "  php bin/grades 6c+ FR           # convert to all other systems\n";
+    echo "  php bin/grades 6c+ FR YDS       # convert only to YDS\n";
+    exit(1);
+}
+
+$value  = $argv[1];              // npr. "6c+"
+$system = strtoupper($argv[2]);  // npr. "FR"
+$target = $argc >= 4 ? strtoupper($argv[3]) : null;
+
+// make service with all scales
+$service = GradeServices::conversion();
+$grade   = new Grade($value, $system);
+
+if ($target !== null) {
+    // conversion in one system
+    $targetEnum = GradeSystem::from($target);
+    $converted  = $service->convert($grade, $targetEnum);
+
+    echo sprintf(
+        "%s %s -> %s %s\n",
+        $grade->value(),
+        strtoupper($grade->system()),
+        $converted->value(),
+        $targetEnum->value
+    );
+    exit(0);
+}
+
+// conversion i all other systems
+$all = $service->convertToAll($grade); // by default without original source
+
+echo sprintf("Conversions for %s %s:\n", $grade->value(), strtoupper($grade->system()));
+
+foreach ($all as $sys => $g) {
+    echo sprintf("- %s: %s\n", $sys, $g->value());
+}
