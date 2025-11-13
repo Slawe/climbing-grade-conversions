@@ -3,6 +3,27 @@
   "description": "PHP library for converting rock climbing grades between French, UIAA, YDS, British and other systems.",
   "type": "library",
   "license": "MIT",
+  "keywords": [
+    "climb",
+    "climbing",
+    "bouldering",
+    "grade",
+    "grades",
+    "grading",
+    "conversion",
+    "converter",
+    "french",
+    "uiaa",
+    "yds",
+    "v-scale",
+    "fontainebleau",
+    "norway",
+    "saxon",
+    "ewbank",
+    "kurtyka",
+    "php",
+    "library"
+  ],
   "autoload": {
     "psr-4": {
       "Climb\\Grades\\": "src/"

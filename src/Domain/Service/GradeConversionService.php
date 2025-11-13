@@ -11,6 +11,11 @@ final class GradeConversionService
     /** @var array<string, GradeScale> $scales keyed by GradeSystem value (e.g. 'FR','UIAA',...) */
     private array $scales = [];
 
+    /**
+     * GradeConversionService constructor.
+     *
+     * @param GradeScale ...$scales
+     */
     public function __construct(GradeScale ...$scales)
     {
         foreach ($scales as $scale) {
@@ -18,7 +23,15 @@ final class GradeConversionService
         }
     }
 
-    public function convert(Grade $grade, GradeSystem $target): Grade
+    /**
+     * One meta scale - all variants
+     * (range/list) exactly according to the table.
+     *
+     * @param Grade $grade
+     * @param GradeSystem $target
+     * @return Grade[]
+     */
+    public function convert(Grade $grade, GradeSystem $target): array
     {
         $from = GradeSystem::from(strtoupper($grade->system()));
         $fromScale = $this->scales[$from->value] ?? null;
@@ -28,8 +41,26 @@ final class GradeConversionService
             throw new RuntimeException('Missing scale implementation.');
         }
 
-        $index = $fromScale->toIndex($grade);
-        return $toScale->fromIndex($index);
+        $indexes = $fromScale->toAllIndexes($grade);
+        $seen = [];
+        $out = [];
+
+        foreach ($indexes as $index) {
+            // all variants in the target scale on that index (e.g. "7/7+" → ["7","7+"])
+            foreach ($toScale->variantsFromIndex($index) as $val) {
+                $key = mb_strtolower($val);
+
+                if (isset($seen[$key])) {
+                    continue;
+                }
+
+                $seen[$key] = true;
+
+                $out[] = new Grade($val, $target->value);
+            }
+        }
+
+        return $out;
     }
 
     /**
@@ -39,31 +70,17 @@ final class GradeConversionService
      */
     public function convertToAll(Grade $grade, bool $includeSource = false): array
     {
+        $result = [];
         $from = GradeSystem::from(strtoupper($grade->system()));
 
-        $out = [];
-        foreach ($this->scales as $sys => $_scale) {
-            $system = GradeSystem::from($sys);
-
-            if (!$includeSource && $system === $from) {
+        foreach ($this->scales as $system => $scale) {
+            if (!$includeSource && $system === $from->value) {
                 continue; // skip original system
             }
 
-            // include original value system
-            if ($includeSource && $system === $from) {
-                $out[$system->value] = $grade;
-                continue;
-            }
-
-            $out[$system->value] = $this->convert($grade, $system);
+            $result[$system] = $this->convert($grade, GradeSystem::from($system));
         }
 
-        return $out;
-    }
-
-    /** (usable sometimes) */
-    public function systems(): array
-    {
-        return array_keys($this->scales);
+        return $result;
     }
 }

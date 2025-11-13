@@ -2,19 +2,30 @@
 
 Small PHP library for converting rock climbing grades between multiple grading systems.
 
-Currently supported:
+Currently supported (out of the box):
 
-- French (FR)
-- UIAA
-- Yosemite Decimal System (YDS)
+- French (sport) - (FR)
+- UIAA  - UIAA
+- Yosemite Decimal System - (YDS)
+- British Technical - (UK_tech)
+- British Adjectival - (UK_adj)
+- German/Swiss Saxon scale - (SAXON)
+- Ewbank Australian - (AU)
+- Ewbank South African - (SA)
+- Scandinavian Finland - (FIN)
+- Scandinavian Norway - (NO)
+- Brazilian Technical - (BR)
+- Polish Cracow/Kurtyka - (PO)
+- Boulder American Verm/Hueco V-Grade - (V)
+- Boulder Fontainebleau Scale - (FONT)
+
+Exact enum names/values are defined in [`Climb\Grades\Domain\Value\GradeSystem`](src/Domain/Value/GradeSystem.php).
 
 The project started as a learning playground for clean architecture / DDD in PHP and evolved into a reusable library.
 
 ---
 
 ## Installation
-
-Once the package is available on Packagist:
 
 ```bash
 composer require slawe/climbing-grade-conversions
@@ -24,40 +35,32 @@ composer require slawe/climbing-grade-conversions
 
 ## Quick usage
 
-### 1. One-liner conversion API
+### 1) One-liner conversion API
 
-The simplest way is to use the `GradeConversion` facade:
+Use the `GradeConversion` facade for a fluent, single-line experience.
+
+> **IMPORTANT**
+> Conversions return **lists** (ranges) of `Grade` objects to reflect the source table exactly.
+> If a cell contains multiple variants (e.g., `7/7+`) or a source grade spans several indices (e.g., `V2`), you get **all** variants. No collapsing to “first/median”.
 
 ```php
 use Climb\Grades\Domain\Service\GradeConversion;
 use Climb\Grades\Domain\Value\GradeSystem;
 
-// Convert French 6c+ to YDS
-$yds = GradeConversion::from('6c+', 'FR')->to(GradeSystem::YDS);
+// FR 6c+ → YDS (returns a LIST)
+$yds = GradeConversion::from('6c+', 'fr')->to(GradeSystem::YDS);
+// e.g. ["5.11b"]
 
-echo $yds->value();   // e.g. "5.11b"
-```
-Convert to all other systems at once:
-```php
-use Climb\Grades\Domain\Service\GradeConversion;
+// FR 6c+ → Norway (returns all variants from the table)
+$norway = GradeConversion::from('6c+', 'fr')->to(GradeSystem::NORWAY);
+// e.g. ["7", "7+"]
 
-$all = GradeConversion::from('6c+', 'FR')->toAll(); // FR is excluded by default
+// FR 6c+ → all systems (each key holds a LIST)
+$all = GradeConversion::from('6c+', 'fr')->toAll(); // FR excluded by default
+// e.g. ['UIAA' => ["VIII-"], 'YDS' => ["5.11b"], 'NORWAY' => ["7","7+"], ...]
 
-foreach ($all as $system => $grade) {
-    echo $system . ': ' . $grade->value() . PHP_EOL;
-}
-```
-If you also want the original system included:
-```php
-$all = GradeConversion::from('6c+', 'FR')->toAll(includeSource: true);
-```
-The result is an associative array:
-```text
-[
-    'FR'      => Grade(...), // only if includeSource=true
-    'UIAA'    => Grade(...),
-    'YDS'     => Grade(...),
-]
+// Include source system as well:
+$allWithSource = GradeConversion::from('6c+', 'fr')->toAll(includeSource: true);
 ```
 
 ### 2. Using the core service directly
@@ -70,41 +73,73 @@ use Climb\Grades\Domain\Value\Grade;
 use Climb\Grades\Domain\Value\GradeSystem;
 use Climb\Grades\Infrastructure\Config\GradeServices;
 
-// Factory that wires all available scales
+// CSV by default (see “Wiring” below)
 $service = GradeServices::conversion();
 
-$grade = new Grade('6c+', 'FR');
+$grade = new Grade('6c+', 'fr');
 
-// Convert FR -> UIAA
+// One target (LIST of Grade variants)
 $uiaa = $service->convert($grade, GradeSystem::UIAA);
 
-// Convert FR -> all other systems
+// All targets (each entry is a LIST of Grade variants)
 $all = $service->convertToAll($grade);
 ```
 
 ## CLI usage
 
-The package ships with a simple CLI helper (`bin/grades`).
+A small helper lives at `bin/grades`.
 
 From the project root:
 
 ```bash
-php bin/grades 6c+ FR
+php bin/grades 6c+ fr
 ```
 Example output:
 ```text
-Conversions for 6c+ FR:
+Conversions for 6c+ fr:
 - UIAA: VIII-
 - YDS: 5.11b
+- NORWAY: 7, 7+
+...
 ```
 Convert to a single target system:
 ```text
-php bin/grades 6c+ FR YDS
-# 6c+ FR -> 5.11b YDS
+php bin/grades 6c+ fr yds
+6c+ FR -> YDS:
+- 5.11b
+```
+Include the source system:
+```text
+php bin/grades 6c+ FR --include-source
 ```
 When installed via Composer in another project, the command is also available as:
 ```text
-vendor/bin/grades 6c+ FR
+vendor/bin/grades 6c+ fr
+```
+
+## Data source & ranges
+
+* The service consumes an **index → grade** map per system (column), by default from a CSV file.
+* A cell may contain **multiple textual variants** (e.g. 7/7+). The API returns **all** of them in order.
+* A source grade can **span multiple indices** (e.g. V-grade “2” mapping to several rows).
+The converter gathers **all target variants** across those indices (deduplicated, ascending index order).
+
+This design guarantees the output mirrors the table exactly—no guessing or collapsing.
+
+## Wiring (storage-agnostic)
+
+The library is storage-agnostic. Scales are wired via a provider/registry; you can pass any repository that implements `GradeScaleDataRepository`.
+
+* Default wiring: CSV
+```php
+use Climb\Grades\Infrastructure\Config\GradeServices;
+
+$service = GradeServices::conversion(); // uses CsvGradeScaleDataRepository
+```
+* Custom wiring: JSON / DB / whatever
+```php
+$repo    = new MySqlGradeScaleDataRepository($pdo);   // your implementation
+$service = GradeServices::conversion($repo); 
 ```
 
 ## Design
@@ -117,7 +152,7 @@ Autoload root:
 Climb\Grades\ → src/
 ```
 
-Main namespaces:
+Key namespaces:
 
 - Climb\Grades\Domain\Value
   - Grade – value object representing a grade in a specific system
@@ -129,84 +164,36 @@ Main namespaces:
   - GradeConversionService – core service that converts between systems
   - GradeConversion – small facade / fluent API built on top of the service
 - Climb\Grades\Domain\Service\Scale
-  - FrenchScale
+  - AmericanVScale
+  - AmericanYdsScale
+  - BrazilianTechnicalScale
+  - EwbankAustralianScale
+  - EwbankSouthAfricaScale
+  - FinlandScale
+  - FrenchFontainebleauScale
+  - FrenchSportScale
+  - NorwayScale
+  - PolishKurtykasScale
+  - SaxonScale
   - UiaaScale
-  - YdsScale
-  - (more can be added)
+  - UkAdjectivalScale
+  - UkTechnicalScale
 - Climb\Grades\Infrastructure\Config
-  - GradeScaleRegistry – central list of registered scales
+  - GradeConfig - current defined path to CSV file
+  - GradeScaleProvider – central list of registered scales
   - GradeServices – factory methods (e.g. conversion())
+- Climb\Grades\Infrastructure\Persistence\Csv
+  - CsvGradeScaleDataRepository - fetch data from CSV
 
 The public surface of the library is intentionally simple:
 in most cases you only need GradeConversion or GradeConversionService.
 
 ## Extending with a new grading system
 
-To add a new system:
-
-#### 1. Add the system to `GradeSystem` enum
-
-```php
-enum GradeSystem: string
-{
-    case FR      = 'FR';
-    case UIAA    = 'UIAA';
-    case YDS     = 'YDS';
-    case BRITISH = 'BRITISH';
-    case AUSTRALIAN = 'AUSTRALIAN'; // example
-}
-```
-
-#### 2. Create a new scale class in `Domain/Service/Scale`, extending `AbstractGradeScale`.
-
-Example skeleton:
-
-```php
-namespace Climb\Grades\Domain\Service\Scale;
-
-use Climb\Grades\Domain\Service\AbstractGradeScale;
-use Climb\Grades\Domain\Value\GradeSystem;
-
-final class AustralianScale extends AbstractGradeScale
-{
-    /**
-     * @var array<int,string>
-     */
-    protected array $indexToGrade = [
-        // 0 => '10', 1 => '11', ...
-    ];
-
-    public function system(): GradeSystem
-    {
-        return GradeSystem::AUSTRALIAN;
-    }
-}
-```
-
-#### 3. Register the scale in `GradeScaleRegistry::all()`:
-
-```php
-use Climb\Grades\Domain\Service\Scale\AustralianScale;
-
-final class GradeScaleRegistry
-{
-    /**
-     * @return array<int, \Climb\Grades\Domain\Service\GradeScale>
-     */
-    public static function all(): array
-    {
-        return [
-            new FrenchScale(),
-            new UiaaScale(),
-            new YdsScale(),
-            new BritishScale(),
-            new AustralianScale(), // <-- new one
-        ];
-    }
-}
-```
-
-After that, `GradeConversionService::convert()` and `convertToAll()` automatically support the new system. The CLI command and GradeConversion facade will also pick it up.
+1. Add a case to `GradeSystem` enum.
+2. Create a scale class extending `AbstractGradeScale` and implement `system(): GradeSystem`.
+3. Register the class in the provider so it’s constructed with the repository.
+The CLI and services will pick it up automatically.
 
 ## Development
 
@@ -215,6 +202,10 @@ Run the test suite:
 ```text
 composer test
 ```
+
+## Version notes
+* **v0.2.x** - GradeConversion::to() and toAll() (and service counterparts)
+return lists to reflect true ranges from the source table. Update code/tests that expected a single value.
 
 ## License
 
