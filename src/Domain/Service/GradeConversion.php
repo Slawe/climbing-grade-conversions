@@ -47,7 +47,7 @@ final class GradeConversion
     }
 
     /**
-     * Convert to single (target) system.
+     * Return ALL variants (list/range) for the target system..
      *
      * @param GradeSystem $target
      * @return Grade[]
@@ -55,6 +55,17 @@ final class GradeConversion
     public function to(GradeSystem $target): array
     {
         return $this->service->convert($this->grade, $target);
+    }
+
+    /**
+     * Return a ConversionChain, so you can call ->all() or ->single(policy).
+     *
+     * @param GradeSystem $target
+     * @return ConversionChain
+     */
+    public function towards(GradeSystem $target): ConversionChain
+    {
+        return new ConversionChain($this->service, $this->grade, $target);
     }
 
     /**

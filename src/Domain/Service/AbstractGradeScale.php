@@ -2,11 +2,12 @@
 
 namespace Climb\Grades\Domain\Service;
 
+use Climb\Grades\Domain\Exception\{AmbiguousGrade, GradeNotFound, IndexOutOfRange, InvalidScaleData};
 use Climb\Grades\Domain\Repository\GradeScaleDataRepository;
 use Climb\Grades\Domain\Value\DifficultyIndex;
 use Climb\Grades\Domain\Value\Grade;
 use Climb\Grades\Domain\Value\GradeSystem;
-use InvalidArgumentException;
+use Normalizer;
 
 /**
  * Base class for concrete grade scales.
@@ -18,12 +19,18 @@ use InvalidArgumentException;
 abstract class AbstractGradeScale implements GradeScale
 {
     /**
+     * Cell delimiter used for splitting variants (override in subclass if needed).
+     * @var string
+     */
+    protected const CELL_DELIMITER = '/';
+
+    /**
      * Index → full grade value
      * (possibly containing multiple variants separated by "/").
      *
      * @var array<int,string>
      */
-    protected array $indexToGrade;
+    private array $indexToGrade;
 
     /**
      * Normalized grade value (lowercase, single variant like "5a") → list of indexes.
@@ -44,12 +51,24 @@ abstract class AbstractGradeScale implements GradeScale
     public function __construct(GradeScaleDataRepository $repo)
     {
         $this->indexToGrade = $repo->indexToGradeMap($this->system());
+        $this->guardContinuousIndexing($this->indexToGrade);
 
-        foreach ($this->indexToGrade as $index => $grade) {
-            foreach ($this->splitVariants($grade) as $variant) {
-                $this->gradeToIndexes[$this->normalized($variant)][] = $index;
+        foreach ($this->indexToGrade as $index => $cell) {
+            foreach ($this->parseCell($cell) as $variant) {
+                $key = $this->normalized($variant);
+                $this->gradeToIndexes[$key] ??= [];
+
+                if (!in_array($index, $this->gradeToIndexes[$key], true)) {
+                    $this->gradeToIndexes[$key][] = $index;
+                }
             }
         }
+
+        // sorting indexes
+        foreach ($this->gradeToIndexes as &$idx) {
+            sort($idx);
+        }
+        unset($idx);
     }
 
     /**
@@ -60,6 +79,27 @@ abstract class AbstractGradeScale implements GradeScale
     abstract public function system(): GradeSystem;
 
     /**
+     * Same as toIndex() but with an explicit policy (LOWEST/MIDDLE/HIGHEST).
+     *
+     * @param Grade $grade
+     * @param PrimaryIndexPolicy $policy
+     * @return DifficultyIndex
+     */
+    public function toIndexWithPolicy(Grade $grade, PrimaryIndexPolicy $policy): DifficultyIndex
+    {
+        $key = $this->normalized($grade->value());
+
+        if (!isset($this->gradeToIndexes[$key])) {
+            throw new GradeNotFound("Unknown grade: {$grade->value()}");
+        }
+
+        $indexes = $this->gradeToIndexes[$key];
+        $primary = $this->pickPrimaryIndex($indexes, $policy);
+
+        return new DifficultyIndex($primary);
+    }
+
+    /**
      * Convert a Grade into a single canonical DifficultyIndex.
      *
      * @param Grade $grade
@@ -67,21 +107,7 @@ abstract class AbstractGradeScale implements GradeScale
      */
     public function toIndex(Grade $grade): DifficultyIndex
     {
-        $key = $this->normalized($grade->value());
-
-        if (!isset($this->gradeToIndexes[$key])) {
-            throw new InvalidArgumentException("Unknown grade: {$grade->value()}");
-        }
-
-        $indexes = $this->gradeToIndexes[$key];
-
-        if (count($indexes) !== 1) {
-            throw new InvalidArgumentException(
-                "Grade maps to multiple indexes in this scale; use toAllIndexes(): {$grade->value()}"
-            );
-        }
-
-        return new DifficultyIndex($indexes[0]);
+        return $this->toIndexWithPolicy($grade, PrimaryIndexPolicy::LOWEST);
     }
 
     /**
@@ -96,17 +122,15 @@ abstract class AbstractGradeScale implements GradeScale
         $key = $this->normalized($grade->value());
 
         if (!isset($this->gradeToIndexes[$key])) {
-            throw new InvalidArgumentException("Unknown grade: {$grade->value()}");
+            throw new GradeNotFound("Unknown grade: {$grade->value()}");
         }
 
-        $idx = $this->gradeToIndexes[$key];
-        sort($idx);
-
-        return array_map(static fn(int $i) => new DifficultyIndex($i), $idx);
+        return array_map(static fn(int $i) => new DifficultyIndex($i), $this->gradeToIndexes[$key]);
     }
 
     /**
      * Convert DifficultyIndex back into a Grade in this scale.
+     * First variant from the grade cell (e.g., "7/7+" → "7").
      *
      * @param DifficultyIndex $index
      * @return Grade
@@ -116,49 +140,109 @@ abstract class AbstractGradeScale implements GradeScale
         $variants = $this->variantsFromIndex($index);
 
         if ($variants === []) {
-            throw new InvalidArgumentException("Index out of range: {$index->value()}");
+            throw new IndexOutOfRange("Index out of range: {$index->value()}");
         }
 
         return new Grade($variants[0], $this->system()->value);
     }
 
     /**
-     * Return all variants of grades for passed index.
+     * Return all textual variants of grades for given index (e.g., "7/7+" → ["7","7+"]).
      *
      * @param DifficultyIndex $index
-     * @return array|string[]
+     * @return string[]
      */
     public function variantsFromIndex(DifficultyIndex $index): array
     {
-        $i = $index->value();
-
-        if (!isset($this->indexToGrade[$i])) {
-            return [];
-        }
-
-        return $this->splitVariants($this->indexToGrade[$i]);
+        $cell = $this->gradeCell($index->value());
+        return $cell === null ? [] : $this->parseCell($cell);
     }
 
     /**
-     * Split variants.
+     * Policy hook – you can override it at a specific scale if you want it differently.
      *
-     * @param string $grades
-     * @return string[]
+     * @param array $sortedIndexes
+     * @param PrimaryIndexPolicy $policy
+     * @return int
      */
-    private function splitVariants(string $grades): array
+    protected function pickPrimaryIndex(array $sortedIndexes, PrimaryIndexPolicy $policy): int
     {
-        $parts = array_map('trim', explode('/', $grades));
+        return match ($policy) {
+            PrimaryIndexPolicy::LOWEST => current($sortedIndexes),
+            PrimaryIndexPolicy::HIGHEST => end($sortedIndexes),
+            PrimaryIndexPolicy::MIDDLE => $sortedIndexes[(int) floor((count($sortedIndexes) - 1) / 2)],
+
+        };
+    }
+
+    /**
+     * Expose a single cell safely to subclass.
+     *
+     * @param int $i
+     * @return string|null
+     */
+    protected function gradeCell(int $i): ?string
+    {
+        return $this->indexToGrade[$i] ?? null;
+    }
+
+    /**
+     * Splits a cell into textual variants (override to change parsing rules).
+     *
+     * @param string $cell
+     * @return array
+     */
+    protected function parseCell(string $cell): array
+    {
+        $parts = array_map('trim', explode(static::CELL_DELIMITER, $cell));
         return array_values(array_filter($parts, static fn($s) => $s !== ''));
     }
 
     /**
-     * Normalized value.
+     * Normalized a grade for map  keys.
      *
      * @param string $v
      * @return string
      */
     private function normalized(string $v): string
     {
+        $v = trim($v);
+
+        // if ext/int available, normalize unicode
+        if (class_exists(Normalizer::class)) {
+            $v = Normalizer::normalize($v);
+        }
+
         return mb_strtolower(trim($v));
+    }
+
+    /**
+     * Ensure map keys are 1..N continuous integers (typical CSV rows).
+     *
+     * @param array $map
+     * @return void
+     */
+    private function guardContinuousIndexing(array $map): void
+    {
+        $keys = array_keys($map);
+
+        // empty map is ok
+        if ($keys === []) {
+            return;
+        }
+
+        // all must be same
+        foreach ($keys as $k) {
+            if (!is_int($k)) {
+                throw new InvalidScaleData("Scale map must use integer keys starting from 0.");
+            }
+        }
+
+        // continuous 1..N
+        for ($i = 1; $i <= count($keys); $i++) {
+            if (!array_key_exists($i, $map)) {
+                throw new InvalidScaleData("Scale map must be continuous (missing index {$i}).");
+            }
+        }
     }
 }

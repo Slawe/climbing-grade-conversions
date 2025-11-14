@@ -9,7 +9,7 @@ use Climb\Grades\Domain\Value\GradeSystem;
 interface GradeScale
 {
     /**
-     * Identifies which grading system this scale represents
+     * Identifies which grading system this scale represents.
      * (e.g., FR, UIAA, YDS, NORWAY, etc.).
      *
      * @return GradeSystem
@@ -17,15 +17,22 @@ interface GradeScale
     public function system(): GradeSystem;
 
     /**
-     * Maps a grade value (e.g., "6c+", "V2") to a single DifficultyIndex.
-     * Use this only when the grade corresponds to exactly one index.
-     * Implementations SHOULD throw if the grade maps to multiple indices,
-     * and suggest using toAllIndexes() instead.
+     * Returns the first (primary) index for the given grade using a
+     * deterministic default policy (LOWEST). Use toAllIndexes() to get all.
      *
      * @param Grade $grade
      * @return DifficultyIndex
      */
     public function toIndex(Grade $grade): DifficultyIndex;
+
+    /**
+     * Same as toIndex() but with an explicit policy (LOWEST/MIDDLE/HIGHEST).
+     *
+     * @param Grade $grade
+     * @param PrimaryIndexPolicy $policy
+     * @return DifficultyIndex
+     */
+    public function toIndexWithPolicy(Grade $grade, PrimaryIndexPolicy $policy): DifficultyIndex;
 
     /**
      * Returns ALL difficulty indices that correspond to the given grade.

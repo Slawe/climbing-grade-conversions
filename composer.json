@@ -1,6 +1,6 @@
 {
   "name": "slawe/climbing-grade-conversions",
-  "description": "PHP library for converting rock climbing grades between French, UIAA, YDS, British and other systems.",
+  "description": "Small PHP library for converting rock climbing grades between multiple grading systems.",
   "type": "library",
   "license": "MIT",
   "keywords": [

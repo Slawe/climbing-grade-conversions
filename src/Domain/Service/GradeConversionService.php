@@ -2,9 +2,9 @@
 
 namespace Climb\Grades\Domain\Service;
 
+use Climb\Grades\Domain\Exception\InvalidScaleData;
 use Climb\Grades\Domain\Value\Grade;
 use Climb\Grades\Domain\Value\GradeSystem;
-use RuntimeException;
 
 final class GradeConversionService
 {
@@ -24,30 +24,26 @@ final class GradeConversionService
     }
 
     /**
-     * One meta scale - all variants
-     * (range/list) exactly according to the table.
+     * Converts from $from to target $to
+     * and returns ALL variants (range) as a list of Grade objects.
      *
-     * @param Grade $grade
-     * @param GradeSystem $target
+     * @param Grade $from
+     * @param GradeSystem $to
      * @return Grade[]
      */
-    public function convert(Grade $grade, GradeSystem $target): array
+    public function convert(Grade $from, GradeSystem $to): array
     {
-        $from = GradeSystem::from(strtoupper($grade->system()));
-        $fromScale = $this->scales[$from->value] ?? null;
-        $toScale   = $this->scales[$target->value] ?? null;
+        $sourceSystem = GradeSystem::from(strtoupper($from->system()));
+        $sourceScale  = $this->scaleOf($sourceSystem);
+        $targetScale = $this->scaleOf($to);
 
-        if (!$fromScale || !$toScale) {
-            throw new RuntimeException('Missing scale implementation.');
-        }
-
-        $indexes = $fromScale->toAllIndexes($grade);
+        $indexes = $sourceScale->toAllIndexes($from);
         $seen = [];
         $out = [];
 
         foreach ($indexes as $index) {
             // all variants in the target scale on that index (e.g. "7/7+" → ["7","7+"])
-            foreach ($toScale->variantsFromIndex($index) as $val) {
+            foreach ($targetScale->variantsFromIndex($index) as $val) {
                 $key = mb_strtolower($val);
 
                 if (isset($seen[$key])) {
@@ -56,7 +52,7 @@ final class GradeConversionService
 
                 $seen[$key] = true;
 
-                $out[] = new Grade($val, $target->value);
+                $out[] = new Grade($val, $to->value);
             }
         }
 
@@ -64,23 +60,83 @@ final class GradeConversionService
     }
 
     /**
+     * Return ONE result, choosing the primary index in the original scale according to the policy
+     * (LOWEST/MIDDLE/HIGHEST). If the target has no variants at that index, return null.
+     *
+     * @param Grade $from
+     * @param GradeSystem $to
+     * @param PrimaryIndexPolicy $sourcePolicy
+     * @param TargetVariantPolicy $targetPolicy
+     * @return Grade|null
+     */
+    public function convertOne(
+        Grade $from,
+        GradeSystem $to,
+        PrimaryIndexPolicy $sourcePolicy = PrimaryIndexPolicy::LOWEST,
+        TargetVariantPolicy $targetPolicy = TargetVariantPolicy::FIRST
+    ): ?Grade {
+        $sourceSystem = GradeSystem::from(strtoupper($from->system()));
+        $sourceScale  = $this->scaleOf($sourceSystem);
+
+        // choose one (primary) index in source scale
+        $index = $sourceScale->toIndexWithPolicy($from, $sourcePolicy);
+
+        // convert that index into the target scale and take the first textual variant
+        $targetScale = $this->scaleOf($to);
+        $variants = $targetScale->variantsFromIndex($index);
+
+        if ($variants === []) {
+            return null;
+        }
+
+        $pick = match ($targetPolicy) {
+            TargetVariantPolicy::FIRST => current($variants),
+            TargetVariantPolicy::LAST => end($variants),
+            TargetVariantPolicy::MIDDLE => $variants[(int) floor((count($variants) - 1) / 2)],
+        };
+
+        return new Grade($pick, $to->value);
+    }
+
+    /**
      * Convert given grade to all registered systems.
      *
      * @return array<string, Grade> associative: ['UIAA' => Grade(...), 'YDS' => Grade(...), ...]
      */
-    public function convertToAll(Grade $grade, bool $includeSource = false): array
+    public function convertToAll(Grade $from, bool $includeSource = false): array
     {
         $result = [];
-        $from = GradeSystem::from(strtoupper($grade->system()));
+        $sourceSystem = strtoupper($from->system());
 
         foreach ($this->scales as $system => $scale) {
-            if (!$includeSource && $system === $from->value) {
-                continue; // skip original system
+            if ($system === $sourceSystem) {
+                if ($includeSource) {
+                    // return EXACTLY what the user entered (one Grade)
+                    $result[$system] = [new Grade($from->value(), $system)];
+                }
+                continue;   // we don't call convert() for the source system
             }
 
-            $result[$system] = $this->convert($grade, GradeSystem::from($system));
+            $result[$system] = $this->convert($from, GradeSystem::from($system));
         }
 
         return $result;
+    }
+
+    /**
+     *
+     *
+     * @param GradeSystem $system
+     * @return GradeScale
+     */
+    private function scaleOf(GradeSystem $system): GradeScale
+    {
+        $key = $system->value;
+
+        if (!isset($this->scales[$key])) {
+            throw new InvalidScaleData("Scale not registered: {$key}");
+        }
+
+        return $this->scales[$key];
     }
 }

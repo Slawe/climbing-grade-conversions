@@ -1,92 +1,169 @@
 #!/usr/bin/env php
 <?php
-
 declare(strict_types=1);
 
-use Climb\Grades\Domain\Value\Grade;
+use Climb\Grades\Domain\Service\GradeConversion;
+use Climb\Grades\Domain\Service\PrimaryIndexPolicy;
+use Climb\Grades\Domain\Service\TargetVariantPolicy;
 use Climb\Grades\Domain\Value\GradeSystem;
-use Climb\Grades\Infrastructure\Config\GradeServices;
 
 require __DIR__ . '/../vendor/autoload.php';
 
-$argv = $_SERVER['argv'];
-$argc = $_SERVER['argc'];
+function usage(): void
+{
+    $help = <<<TXT
+Climbing Grade Conversions – CLI
 
-$help = <<<TXT
-Usage:
-  php bin/grades <gradeValue> <gradeSystem> [<targetSystem>] [--include-source]
+USAGE:
+  php bin/grades <gradeValue> <gradeSystem> [targetSystem] [options]
 
-Examples:
-  php bin/grades 6c+ FR             # convert to all other systems (lists)
+Positional args:
+  <gradeValue>     e.g. "6c+" or "7a"
+  <gradeSystem>    e.g. "FR", "UIAA", "YDS"
+  [targetSystem]   (optional) target, e.g. "YDS", "BR"
+                   - if omitted → convert to ALL other systems (range)
+
+Options:
+  --single, -1                 Return ONE result instead of a list/range
+  --source-policy=lowest|middle|highest
+                               How to pick source index when multiple exist
+                               (default: lowest)
+  --target-policy=first|middle|last
+                               Which target variant to pick if the cell has multiple
+                               (default: first)
+  --include-source             When converting to ALL systems, include the source too
+  --help, -h                   Show this help
+
+EXAMPLES:
+  php bin/grades 6c+ FR
+  php bin/grades 6c+ FR YDS
+  php bin/grades 7a FR BR --single --target-policy=last
   php bin/grades 6c+ FR --include-source
-  php bin/grades 6c+ FR YDS         # convert only to YDS (list)
 TXT;
-
-if ($argc < 3) {
-    fwrite(STDERR, $help . PHP_EOL);
-    exit(1);
+    echo $help . PHP_EOL;
 }
 
-$value   = $argv[1];                    // e.g. "6c+"
-$system  = strtoupper($argv[2]);        // e.g. "FR"
-$target  = null;
-$include = false;
+function parsePolicySource(?string $v): PrimaryIndexPolicy
+{
+    return match (strtolower((string)$v)) {
+        '', 'lowest'  => PrimaryIndexPolicy::LOWEST,
+        'middle'      => PrimaryIndexPolicy::MIDDLE,
+        'highest'     => PrimaryIndexPolicy::HIGHEST,
+        default       => throw new InvalidArgumentException("Unknown --source-policy: {$v}")
+    };
+}
 
-// parse optional args
-for ($i = 3; $i < $argc; $i++) {
-    $arg = $argv[$i];
-    if ($arg === '--include-source') {
-        $include = true;
+function parsePolicyTarget(?string $v): TargetVariantPolicy
+{
+    return match (strtolower((string)$v)) {
+        '', 'first'   => TargetVariantPolicy::FIRST,
+        'middle'      => TargetVariantPolicy::MIDDLE,
+        'last'        => TargetVariantPolicy::LAST,
+        default       => throw new InvalidArgumentException("Unknown --target-policy: {$v}")
+    };
+}
+
+// ---- parse argv -------------------------------------------------------------
+
+$args = $_SERVER['argv'];
+array_shift($args); // strip script name
+
+$flags = [
+    'single'         => false,
+    'include_source' => false,
+    'source_policy'  => 'lowest',
+    'target_policy'  => 'first',
+];
+
+$positionals = [];
+
+foreach ($args as $a) {
+    if ($a === '--help' || $a === '-h') {
+        usage();
+        exit(0);
+    }
+    if ($a === '--single' || $a === '-1') {
+        $flags['single'] = true;
         continue;
     }
-    // if not a flag, treat as target system
-    if ($target === null) {
-        $target = strtoupper($arg);
+    if ($a === '--include-source') {
+        $flags['include_source'] = true;
+        continue;
     }
+    if (str_starts_with($a, '--source-policy=')) {
+        $flags['source_policy'] = substr($a, strlen('--source-policy='));
+        continue;
+    }
+    if (str_starts_with($a, '--target-policy=')) {
+        $flags['target_policy'] = substr($a, strlen('--target-policy='));
+        continue;
+    }
+    // positional
+    $positionals[] = $a;
 }
 
+if (count($positionals) < 2) {
+    usage();
+    exit(1);
+}
+
+[$value, $system] = $positionals + [null, null];
+$target = $positionals[2] ?? null;
+
 try {
-    $service = GradeServices::conversion();
-    $grade   = new Grade($value, $system);
+    $systemEnum = GradeSystem::from(strtoupper($system));
+} catch (Throwable $e) {
+    fwrite(STDERR, "Unknown grade system: {$system}\n");
+    exit(1);
+}
+
+$sourcePolicy = parsePolicySource($flags['source_policy']);
+$targetPolicy = parsePolicyTarget($flags['target_policy']);
+
+// ---- run -------------------------------------------------------------------
+
+try {
+    $facade = GradeConversion::from($value, strtoupper($systemEnum->value));
 
     if ($target !== null) {
-        // one target → print ALL variants
-        $targetEnum = GradeSystem::from($target);
-        $list = $service->convert($grade, $targetEnum); // Grade[]
+        // have a target system
+        $targetEnum = GradeSystem::from(strtoupper($target));
 
-        echo "{$value} {$system} -> {$targetEnum->value}:" . PHP_EOL;
-        if (empty($list)) {
-            echo "- (no results)" . PHP_EOL;
+        if ($flags['single']) {
+            $one = $facade->towards($targetEnum)->single($sourcePolicy, $targetPolicy);
+            if ($one === null) {
+                echo "No conversion available for {$value} {$systemEnum->value} → {$targetEnum->value}\n";
+                exit(0);
+            }
+            echo "{$value} {$systemEnum->value} -> {$one->value()} {$targetEnum->value}\n";
             exit(0);
         }
+
+        // default: RANGE (list)
+        $list = $facade->to($targetEnum); // BC behavior
+        if ($list === []) {
+            echo "No conversion available for {$value} {$systemEnum->value} → {$targetEnum->value}\n";
+            exit(0);
+        }
+
+        echo "Conversions for {$value} {$systemEnum->value} → {$targetEnum->value}:\n";
         foreach ($list as $g) {
-            echo "- {$g->value()}" . PHP_EOL;
+            echo "- {$g->value()}\n";
         }
         exit(0);
     }
 
-    // all systems → each key maps to a LIST
-    $all = $service->convertToAll($grade, $include);
+    // no target system → ALL systems
+    $all = $facade->toAll($flags['include_source']);
 
-    echo "Conversions for {$value} {$system}:" . PHP_EOL;
-    if (empty($all)) {
-        echo "- (no results)" . PHP_EOL;
-        exit(0);
-    }
-
+    echo "Conversions for {$value} {$systemEnum->value} (all systems):\n";
     foreach ($all as $sys => $grades) {
-        if (empty($grades)) {
-            echo "- {$sys}: (no results)" . PHP_EOL;
-            continue;
-        }
         $vals = array_map(static fn($g) => $g->value(), $grades);
-        echo "- {$sys}: " . implode(', ', $vals) . PHP_EOL;
+        echo "- {$sys}: " . implode('/', $vals) . "\n";
     }
-} catch (ValueError $e) {
-    // GradeSystem::from() throws ValueError on invalid enum
-    fwrite(STDERR, "Unknown system provided. {$help}" . PHP_EOL);
-    exit(1);
+    exit(0);
+
 } catch (Throwable $e) {
-    fwrite(STDERR, '[error] ' . $e->getMessage() . PHP_EOL);
+    fwrite(STDERR, "[error] {$e->getMessage()}\n");
     exit(1);
 }
