@@ -334,9 +334,12 @@ php bin/grades 6c+ FR YDS
 
 ---
 
-## Version notes
-* **v0.2.x** - GradeConversion::to() and toAll() (and service counterparts)
-return lists to reflect true ranges from the source table. Update code/tests that expected a single value.
+## Changelog
+
+See **[CHANGELOG.md](./CHANGELOG.md)** for release notes.
+
+Latest: **v0.3.0** — chain API (`towards()->all()/single()`), selection policies, validated scale data, CLI flags, and exact-source return in `toAll(includeSource: true)`.
+
 ---
 
 ## License
